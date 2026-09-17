@@ -1,7 +1,18 @@
 name: Depot Kompass automatisch aktualisieren
 on:
   schedule:
-    - cron: '7,22,37,52 * * * *'
+    # Reguläre Handelszeit: alle 20 Minuten. Die Börsenlogik im Job berücksichtigt Zeitzonen und Sommerzeit.
+    - cron: '7,27,47 6-22 * * 1-5'
+    # Redundante Kontrollläufe um Europa- und USA-Eröffnung (jeweils Sommer- und Winterzeit).
+    - cron: '0,10 7,8 * * 1-5'
+    - cron: '20,30,40 13,14 * * 1-5'
+    # Redundante Kontrollläufe um Europa- und USA-Schluss (jeweils Sommer- und Winterzeit).
+    - cron: '20,30,40 15,16 * * 1-5'
+    - cron: '50 19,20 * * 1-5'
+    - cron: '0,10 20,21 * * 1-5'
+    # Außerhalb der Handelszeit und am Wochenende: Lebenszeichen, Krypto und Nachrichten.
+    - cron: '7 0,3,23 * * 1-5'
+    - cron: '7 0,6,12,18 * * 0,6'
   workflow_dispatch:
 permissions:
   contents: write
@@ -11,40 +22,75 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
-      - name: Marktpreise, Recherche und Server-Verlauf aktualisieren
+      - name: Börsenbezogene Kurse, Recherche und Server-Verlauf aktualisieren
         env:
           GITHUB_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           node --input-type=module <<'JS'
           const base='https://lalinea-bonn.de/depot-kompass-sebbo-20260912/api/market.php';
-          async function get(params,method='GET') {
-            const r=await fetch(base+'?'+new URLSearchParams(params),{method,signal:AbortSignal.timeout(65000)});
-            const d=await r.json(); if(!r.ok||!d.ok)throw Error('Backend HTTP '+r.status+' / '+(d.code||'data unavailable')); return d;
+          const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+          async function get(params,method='GET',attempts=3) {
+            let last;
+            for(let attempt=1;attempt<=attempts;attempt++){
+              try{
+                const r=await fetch(base+'?'+new URLSearchParams(params),{method,signal:AbortSignal.timeout(65000)});
+                const d=await r.json(); if(!r.ok||!d.ok)throw Error('Backend HTTP '+r.status+' / '+(d.code||'data unavailable'));
+                return d;
+              }catch(e){last=e;if(attempt<attempts)await sleep(attempt*2500);}
+            }
+            throw last;
           }
+          function clock(zone){
+            const parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:zone,weekday:'short',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date()).filter(x=>x.type!=='literal').map(x=>[x.type,x.value]));
+            return {weekday:parts.weekday,date:parts.year+'-'+parts.month+'-'+parts.day,minute:Number(parts.hour)*60+Number(parts.minute)};
+          }
+          const weekday=c=>!['Sat','Sun'].includes(c.weekday),within=(c,start,end)=>weekday(c)&&c.minute>=start&&c.minute<=end;
+          const eu=clock('Europe/Berlin'),us=clock('America/New_York');
+          let phase='interval';
+          if(within(eu,8*60+50,9*60+25))phase='eu-open';
+          else if(within(eu,17*60+20,18*60))phase='eu-close';
+          else if(within(us,9*60+20,10*60))phase='us-open';
+          else if(within(us,15*60+50,16*60+30))phase='us-close';
+          const euTrading=within(eu,8*60+45,18*60),usTrading=within(us,9*60+15,16*60+30),boundary=phase!=='interval';
+          if(!boundary&&!euTrading&&!usTrading)phase='overnight';
+
           const universe=(await get({kind:'universe'})).data;
-          const symbols=universe.stocks.map(x=>x.symbol),chunks=[];
+          const all=universe.stocks;
+          const selected=boundary||phase==='overnight'?all:all.filter(x=>(euTrading&&!x.us)||(usTrading&&x.us));
+          const symbols=selected.map(x=>x.symbol),chunks=[];
           for(let i=0;i<symbols.length;i+=4)chunks.push(symbols.slice(i,i+4));
           let errors=0;
           async function pool(jobs,limit=3){let cursor=0;await Promise.all(Array.from({length:limit},async()=>{while(cursor<jobs.length){const job=jobs[cursor++];try{await job()}catch(e){errors++;console.warn(String(e.message));}}}));}
-          // STRATO applies per-provider caching and quotas; keys never leave STRATO.
-          for(const kind of ['quotes','history','targets','fundamentals']) {
-            let count=0,missing=0,fresh=0;
-            await pool(chunks.map(group=>async()=>{const d=await get({kind,symbols:group.join(',')});count+=Object.keys(d.data).length;fresh+=Object.values(d.data).filter(x=>Date.now()-Date.parse(x.fetchedAt)<3600000).length;missing+=(d.missing||[]).length;}));
-            console.log(kind+': '+count+' results, '+missing+' unavailable');
-            if(kind==='quotes'&&fresh<35)throw Error('Too few freshly fetched market quotes');
+
+          let quoteCount=0,quoteFresh=0,quoteMissing=0;
+          await pool(chunks.map(group=>async()=>{const d=await get({kind:'quotes',symbols:group.join(',')});quoteCount+=Object.keys(d.data).length;quoteFresh+=Object.values(d.data).filter(x=>Date.now()-Date.parse(x.fetchedAt)<3600000).length;quoteMissing+=(d.missing||[]).length;}));
+          console.log(phase+': '+quoteCount+'/'+symbols.length+' selected quotes, '+quoteFresh+' freshly fetched, '+quoteMissing+' unavailable');
+          if(symbols.length&&quoteCount<Math.max(1,Math.floor(symbols.length*.75)))throw Error('Too few market quotes for '+phase);
+          if(boundary&&quoteFresh<35)throw Error('Boundary checkpoint has too few freshly fetched quotes');
+
+          // Historien, Ziele und Fundamentaldaten an den vier täglichen Kontrollpunkten vollständig prüfen.
+          if(boundary){
+            const allChunks=[];for(let i=0;i<all.length;i+=4)allChunks.push(all.slice(i,i+4).map(x=>x.symbol));
+            for(const kind of ['history','targets','fundamentals']){
+              let count=0,missing=0;
+              await pool(allChunks.map(group=>async()=>{const d=await get({kind,symbols:group.join(',')});count+=Object.keys(d.data).length;missing+=(d.missing||[]).length;}));
+              console.log(kind+': '+count+' results, '+missing+' unavailable');
+            }
           }
-          const groups=Math.ceil(universe.stocks.filter(x=>x.holding&&!x.isEtf).length/5);
+
+          const groups=Math.ceil(all.filter(x=>x.holding&&!x.isEtf).length/5);
           let newsFresh=0;
           await pool(Array.from({length:groups},(_,group)=>async()=>{const r=await get({kind:'news',group});if(Date.now()-Date.parse(r.data.fetchedAt)<3600000)newsFresh++;}));
-          await get({kind:'crypto'});
-          await get({kind:'benchmarks'});
+          await get({kind:'crypto'});await get({kind:'benchmarks'});
           if(newsFresh<Math.min(5,groups))throw Error('News cache is stale');
-          const d=(await get({kind:'heartbeat'},'POST')).data;
-          console.log('Backend checked: '+d.checkedAt+'; valued positions: '+d.covered+'; news groups: '+newsFresh+'/'+groups);
           if(errors>5)throw Error('Multiple upstream failures: '+errors);
+
+          const d=(await get({kind:'heartbeat',phase},'POST')).data;
+          console.log('Checkpoint '+phase+' completed: '+d.checkedAt+'; valued positions: '+d.covered+'; news groups: '+newsFresh+'/'+groups);
+
           // A monthly maintenance commit keeps GitHub's 60-day inactivity cutoff from disabling this public scheduler.
           const headers={Authorization:'Bearer '+process.env.GITHUB_TOKEN,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'};
           const url='https://api.github.com/repos/'+process.env.GITHUB_REPOSITORY+'/contents/maintenance.txt';
