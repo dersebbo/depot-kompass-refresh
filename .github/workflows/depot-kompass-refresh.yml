@@ -27,6 +27,7 @@ jobs:
       - name: Börsenbezogene Kurse, Recherche und Server-Verlauf aktualisieren
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          DEPOT_REFRESH_TOKEN: ${{ secrets.DEPOT_REFRESH_TOKEN }}
         shell: bash
         run: |
           node --input-type=module <<'JS'
@@ -36,7 +37,7 @@ jobs:
             let last;
             for(let attempt=1;attempt<=attempts;attempt++){
               try{
-                const r=await fetch(base+'?'+new URLSearchParams(params),{method,signal:AbortSignal.timeout(65000)});
+                const r=await fetch(base+'?'+new URLSearchParams(params),{method,headers:{'X-Depot-Refresh-Key':process.env.DEPOT_REFRESH_TOKEN},signal:AbortSignal.timeout(65000)});
                 const d=await r.json(); if(!r.ok||!d.ok)throw Error('Backend HTTP '+r.status+' / '+(d.code||'data unavailable'));
                 return d;
               }catch(e){last=e;if(attempt<attempts)await sleep(attempt*2500);}
