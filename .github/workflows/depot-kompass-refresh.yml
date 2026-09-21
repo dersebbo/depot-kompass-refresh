@@ -13,6 +13,8 @@ on:
     # Außerhalb der Handelszeit und am Wochenende: Lebenszeichen, Krypto und Nachrichten.
     - cron: '7 0,3,23 * * 1-5'
     - cron: '7 0,6,12,18 * * 0,6'
+    # Ideen und Analystenkursziele morgens und abends, auch am Wochenende.
+    - cron: '37 7,17 * * *'
   workflow_dispatch:
 permissions:
   contents: write
@@ -28,6 +30,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           DEPOT_REFRESH_TOKEN: ${{ secrets.DEPOT_REFRESH_TOKEN }}
+          DEPOT_SCHEDULE: ${{ github.event.schedule }}
         shell: bash
         run: |
           node --input-type=module <<'JS'
@@ -60,10 +63,25 @@ jobs:
 
           const universe=(await get({kind:'universe'})).data;
           const all=universe.stocks;
+          let errors=0;
+          if(process.env.DEPOT_SCHEDULE==='37 7,17 * * *'){
+            const ideas=all.filter(x=>!x.holding),groups=[];
+            for(let i=0;i<ideas.length;i+=4)groups.push(ideas.slice(i,i+4).map(x=>x.symbol));
+            let quotes=0,targets=0,missing=0;
+            await pool(groups.map(group=>async()=>{
+              const symbols=group.join(',');
+              const [q,t]=await Promise.all([get({kind:'quotes',symbols}),get({kind:'targets',symbols})]);
+              quotes+=Object.keys(q.data).length;
+              targets+=Object.keys(t.data).length;
+              missing+=(q.missing||[]).length+(t.missing||[]).length;
+            }));
+            console.log('Ideen-Prüfung '+eu.date+': '+quotes+'/'+ideas.length+' Kurse, '+targets+' Ziele/ETF-Ausnahmen, '+missing+' fehlende Antworten');
+            if(errors||quotes<Math.ceil(ideas.length*.6))throw Error('Ideen-Prüfung unvollständig: '+errors+' Gruppenfehler');
+            process.exit(0);
+          }
           const selected=boundary||phase==='overnight'?all:all.filter(x=>(euTrading&&!x.us)||(usTrading&&x.us));
           const symbols=selected.map(x=>x.symbol),chunks=[];
           for(let i=0;i<symbols.length;i+=4)chunks.push(symbols.slice(i,i+4));
-          let errors=0;
           async function pool(jobs,limit=3){let cursor=0;await Promise.all(Array.from({length:limit},async()=>{while(cursor<jobs.length){const job=jobs[cursor++];try{await job()}catch(e){errors++;console.warn(String(e.message));}}}));}
 
           let quoteCount=0,quoteFresh=0,quoteMissing=0;
