@@ -1,5 +1,19 @@
 name: Depot Kompass automatisch aktualisieren
 on:
+  schedule:
+    # Asien: Tokio-Eröffnung sowie Schlussphase Tokio/Hongkong.
+    - cron: '10 0 * * 1-5'
+    - cron: '40 6 * * 1-5'
+    # Europa: Eröffnung und Schluss, jeweils mit Sommer-/Winterzeit-Reserve.
+    - cron: '10 7,8 * * 1-5'
+    - cron: '40 15,16 * * 1-5'
+    # USA: Eröffnung und Schluss, jeweils mit Sommer-/Winterzeit-Reserve.
+    - cron: '40 13,14 * * 1-5'
+    - cron: '10 20,21 * * 1-5'
+    # Ideen und Analystenziele morgens und abends.
+    - cron: '37 7,17 * * *'
+    # Wochenende: ein schonender Lauf für Krypto, Nachrichten und Marktumfeld.
+    - cron: '10 8 * * 0,6'
   workflow_dispatch:
 permissions:
   contents: write
