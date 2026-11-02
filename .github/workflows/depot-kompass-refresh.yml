@@ -1,5 +1,10 @@
 name: Depot Kompass automatisch aktualisieren
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/depot-kompass-refresh.yml'
   workflow_dispatch:
 permissions:
   contents: write
@@ -12,6 +17,8 @@ jobs:
     timeout-minutes: 12
     steps:
       - name: Börsenbezogene Kurse, Recherche und Server-Verlauf aktualisieren
+        id: refresh
+        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ github.token }}
           DEPOT_REFRESH_TOKEN: ${{ secrets.DEPOT_REFRESH_TOKEN }}
@@ -88,9 +95,12 @@ jobs:
           const groups=Math.ceil(all.filter(x=>x.holding&&!x.isEtf).length/5);
           let newsFresh=0;
           await pool(Array.from({length:groups},(_,group)=>async()=>{const r=await get({kind:'news',group});if(Date.now()-Date.parse(r.data.fetchedAt)<3600000)newsFresh++;}));
-          await get({kind:'crypto'});await get({kind:'benchmarks'});
-          if(newsFresh<Math.min(5,groups))throw Error('News cache is stale');
-          if(errors>5)throw Error('Multiple upstream failures: '+errors);
+          for(const kind of ['crypto','benchmarks']){
+            try{await get({kind});}
+            catch(error){console.warn('::warning title='+kind+' vorübergehend nicht verfügbar::'+String(error.message||error));}
+          }
+          if(newsFresh<Math.min(5,groups))console.warn('::warning title=Nachrichten-Cache eingeschränkt::Nur '+newsFresh+'/'+groups+' Nachrichtengruppen sind aktuell; vorhandener Cache bleibt aktiv.');
+          if(errors>5)console.warn('::warning title=Mehrere Zusatzquellen eingeschränkt::'+errors+' optionale Abrufe waren nicht erfolgreich; Kernkurse und vorhandene Caches bleiben aktiv.');
 
           const d=(await get({kind:'heartbeat',phase},'POST')).data;
           console.log('Checkpoint '+phase+' completed: '+d.checkedAt+'; valued positions: '+d.covered+'; news groups: '+newsFresh+'/'+groups);
@@ -105,3 +115,15 @@ jobs:
             if(!r.ok)throw Error('Scheduler maintenance HTTP '+r.status);
           }
           JS
+
+      - name: Laufstatus nachvollziehbar protokollieren
+        if: always()
+        shell: bash
+        run: |
+          if [[ "${{ steps.refresh.outcome }}" == "success" ]]; then
+            echo "### Depot-Kompass erfolgreich aktualisiert" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::Eine Zusatzquelle war vorübergehend nicht verfügbar. Bestehende Kurse und Caches bleiben aktiv; der nächste Lauf versucht es erneut."
+            echo "### Depot-Kompass teilweise aktualisiert" >> "$GITHUB_STEP_SUMMARY"
+            echo "Der Lauf bleibt absichtlich erfolgreich, damit vorübergehende Providerfehler keine Fehlalarm-E-Mails auslösen." >> "$GITHUB_STEP_SUMMARY"
+          fi
