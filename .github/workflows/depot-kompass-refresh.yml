@@ -1,10 +1,5 @@
 name: Depot Kompass automatisch aktualisieren
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - '.github/workflows/depot-kompass-refresh.yml'
   workflow_dispatch:
 permissions:
   contents: write
