@@ -1,20 +1,5 @@
 name: Depot Kompass automatisch aktualisieren
 on:
-  schedule:
-    # Reguläre Handelszeit: alle 20 Minuten. Die Börsenlogik im Job berücksichtigt Zeitzonen und Sommerzeit.
-    - cron: '7,27,47 6-22 * * 1-5'
-    # Redundante Kontrollläufe um Europa- und USA-Eröffnung (jeweils Sommer- und Winterzeit).
-    - cron: '0,10 7,8 * * 1-5'
-    - cron: '20,30,40 13,14 * * 1-5'
-    # Redundante Kontrollläufe um Europa- und USA-Schluss (jeweils Sommer- und Winterzeit).
-    - cron: '20,30,40 15,16 * * 1-5'
-    - cron: '50 19,20 * * 1-5'
-    - cron: '0,10 20,21 * * 1-5'
-    # Außerhalb der Handelszeit und am Wochenende: Lebenszeichen, Krypto und Nachrichten.
-    - cron: '7 0,3,23 * * 1-5'
-    - cron: '7 0,6,12,18 * * 0,6'
-    # Ideen und Analystenkursziele morgens und abends, auch am Wochenende.
-    - cron: '37 7,17 * * *'
   workflow_dispatch:
 permissions:
   contents: write
