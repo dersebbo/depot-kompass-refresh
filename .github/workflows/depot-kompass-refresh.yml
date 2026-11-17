@@ -1,6 +1,8 @@
 name: Depot Kompass automatisch aktualisieren
 on:
   schedule:
+    # Holdings every 15 minutes; runtime guard skips closed markets.
+    - cron: '*/15 7-21 * * 1-5'
     # Asien: Tokio-Eröffnung sowie Schlussphase Tokio/Hongkong.
     - cron: '10 0 * * 1-5'
     - cron: '40 6 * * 1-5'
@@ -62,6 +64,8 @@ jobs:
           const euTrading=within(eu,8*60+45,18*60),usTrading=within(us,9*60+15,16*60+30),boundary=phase!=='interval';
           if(!boundary&&!euTrading&&!usTrading)phase='overnight';
 
+          const intraday=process.env.DEPOT_SCHEDULE==='*/15 7-21 * * 1-5';
+          if(intraday&&!euTrading&&!usTrading){console.log('Markets closed; no provider requests.');process.exit(0);}
           const universe=(await get({kind:'universe'})).data;
           const all=universe.stocks;
           let errors=0;
@@ -80,7 +84,8 @@ jobs:
             if(errors||quotes<Math.ceil(ideas.length*.6))throw Error('Ideen-Prüfung unvollständig: '+errors+' Gruppenfehler');
             process.exit(0);
           }
-          const selected=boundary||phase==='overnight'?all:all.filter(x=>(euTrading&&!x.us)||(usTrading&&x.us));
+          const eligible=intraday?all.filter(x=>x.holding):all;
+          const selected=boundary||phase==='overnight'?eligible:eligible.filter(x=>(euTrading&&!x.us)||(usTrading&&x.us));
           const symbols=selected.map(x=>x.symbol),chunks=[];
           for(let i=0;i<symbols.length;i+=4)chunks.push(symbols.slice(i,i+4));
           async function pool(jobs,limit=3){let cursor=0;await Promise.all(Array.from({length:limit},async()=>{while(cursor<jobs.length){const job=jobs[cursor++];try{await job()}catch(e){errors++;console.warn(String(e.message));}}}));}
@@ -90,6 +95,12 @@ jobs:
           console.log(phase+': '+quoteCount+'/'+symbols.length+' selected quotes, '+quoteFresh+' freshly fetched, '+quoteMissing+' unavailable');
           if(symbols.length&&quoteCount<Math.max(1,Math.floor(symbols.length*.75)))throw Error('Too few market quotes for '+phase);
           if(boundary&&quoteFresh<35)throw Error('Boundary checkpoint has too few freshly fetched quotes');
+
+          if(intraday){
+            await get({kind:'heartbeat',phase:'interval'},'POST');
+            console.log('Intraday holdings refresh complete; shared provider budgets and caches enforced by backend.');
+            process.exit(0);
+          }
 
           // Historien, Ziele und Fundamentaldaten an den vier täglichen Kontrollpunkten vollständig prüfen.
           if(boundary){
